@@ -264,7 +264,7 @@ int wmain(int argc, wchar_t** argv)
 	//HMODULE hexe = LoadLibrary(redirectTo.c_str());
 
 	FARPROC p = GetProcAddress(hdll, "HelloDll2");
-	p();
+	//p();
 
 	//HelloDll();
 	printf("after HelloDll\n");
