@@ -17,3 +17,11 @@ Compile.
 
 This git repo contains some experimenting stuff, related to native .dll loading.
 
+### What is this project intent ?
+
+To provide necessary information on what I was trying to do, and what were results -
+for more information see:
+
+https://github.com/tapika/test_native_dll_loading/discussions/2
+
+
