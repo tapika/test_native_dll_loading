@@ -12,8 +12,11 @@ using namespace std::filesystem;
 
 extern "C" __declspec(dllimport) void HelloDll();
 
-const wchar_t* memoryMapingName = L"MyFileMappingObject";
-const wchar_t* memoryMapingNameKernel = L"\\??\\MyFileMappingObject";
+bool tryMemoryMapping = false;
+//bool tryMemoryMapping = true;
+
+const wchar_t* memoryMapingName = L"Global\\MyFileMappingObject";
+const wchar_t* memoryMapingNameKernel = L"\\BaseNamedObjects\\MyFileMappingObject";
 int fileSize = 52224;
 
 //-------------------------------------------------------------------------------------------------------------
@@ -80,11 +83,21 @@ NTSTATUS WINAPI NtOpenFile_detour(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			{
 				oattr = *ObjectAttributes;
 				oattr.ObjectName = &ustr;
-				RtlInitUnicodeString(&ustr, redirectTo.c_str());
-				//RtlInitUnicodeString(&ustr, memoryMapingNameKernel);
+				//RtlInitUnicodeString(&ustr, redirectTo.c_str());
+				RtlInitUnicodeString(&ustr, memoryMapingNameKernel);
 				poattr = &oattr;
 			}
-			NTSTATUS r2 = NtOpenFile_origfunc(&g_dllsContainer, DesiredAccess, poattr, IoStatusBlock, ShareAccess, OpenOptions);
+
+			if(tryMemoryMapping && redirectOpen)
+			{
+				r = NtOpenSection(FileHandle, SECTION_MAP_READ | SECTION_MAP_WRITE, &oattr);
+			}
+			else
+			{
+				r = NtOpenFile_origfunc(&g_dllsContainer, DesiredAccess, poattr, IoStatusBlock, ShareAccess, OpenOptions);
+			}
+
+
 
 			// Ingnore return value
 			if (!SUCCEEDED(r))
@@ -262,18 +275,26 @@ int wmain(int argc, wchar_t** argv)
 	r = MH_CreateHookApi(ntdll_dll, "NtMapViewOfSection", &NtMapViewOfSection_detour, (LPVOID*)&NtMapViewOfSection_origfunc);
 	r = MH_CreateHookApi(ntdll_dll, "NtReadFile", &NtReadFile_detour, (LPVOID*)&NtReadFile_origfunc);
 	
-	//ifstream is;
-	//is.open(extdll, ios::binary);
-	//// get length of file:
-	//is.seekg(0, ios::end);
-	//fileSize = is.tellg();
+	if(tryMemoryMapping)
+	{
+		ifstream is;
+		is.open(extdll, ios::binary);
+		// get length of file:
+		is.seekg(0, ios::end);
+		fileSize = is.tellg();
 
-	//HANDLE hMapFile = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, fileSize, memoryMapingName);
-	//char* pfile = (char*)MapViewOfFile(hMapFile,FILE_MAP_ALL_ACCESS, 0, 0, fileSize);
+		HANDLE hMapFile = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, fileSize, memoryMapingName);
+		if(hMapFile == 0)
+		{
+			printf("- Requires elevated mode");
+			return 2;
+		}
+		char* pfile = (char*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, fileSize);
 
-	//is.seekg(0, ios::beg);
-	//is.read(pfile, fileSize);
-	//is.close();
+		is.seekg(0, ios::beg);
+		is.read(pfile, fileSize);
+		is.close();
+	}
 
 
 	MH_EnableHook(MH_ALL_HOOKS);
