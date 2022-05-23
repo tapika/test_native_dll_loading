@@ -3,12 +3,18 @@
 #include <windows.h>
 #include <filesystem>
 #include <map>
+#include <iostream>
+#include <fstream>
 using namespace std;
 using namespace std::filesystem;
 //#define _NTDLL_SELF_
 #include "ntddk.h"
 
 extern "C" __declspec(dllimport) void HelloDll();
+
+const wchar_t* memoryMapingName = L"MyFileMappingObject";
+const wchar_t* memoryMapingNameKernel = L"\\??\\MyFileMappingObject";
+int fileSize = 52224;
 
 //-------------------------------------------------------------------------------------------------------------
 using OpenFileW_pfunc = HFILE(WINAPI*)(LPWSTR lpFileName, LPOFSTRUCT lpReOpenBuff, UINT uStyle );
@@ -75,6 +81,7 @@ NTSTATUS WINAPI NtOpenFile_detour(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 				oattr = *ObjectAttributes;
 				oattr.ObjectName = &ustr;
 				RtlInitUnicodeString(&ustr, redirectTo.c_str());
+				//RtlInitUnicodeString(&ustr, memoryMapingNameKernel);
 				poattr = &oattr;
 			}
 			NTSTATUS r2 = NtOpenFile_origfunc(&g_dllsContainer, DesiredAccess, poattr, IoStatusBlock, ShareAccess, OpenOptions);
@@ -229,6 +236,7 @@ int wmain(int argc, wchar_t** argv)
 
 	//auto dll = weakly_canonical(path(argv[0])).parent_path().append("mydll.dll");
 	auto dll = weakly_canonical(path(argv[0])).parent_path().append("dllstub.dll");
+	auto extdll = weakly_canonical(path(argv[0])).parent_path().append("ext").append("mydll.dll");
 	redirectFromDir = L"\\??\\" + weakly_canonical(path(argv[0])).parent_path().wstring();
 
 	// Main executable
@@ -254,6 +262,20 @@ int wmain(int argc, wchar_t** argv)
 	r = MH_CreateHookApi(ntdll_dll, "NtMapViewOfSection", &NtMapViewOfSection_detour, (LPVOID*)&NtMapViewOfSection_origfunc);
 	r = MH_CreateHookApi(ntdll_dll, "NtReadFile", &NtReadFile_detour, (LPVOID*)&NtReadFile_origfunc);
 	
+	//ifstream is;
+	//is.open(extdll, ios::binary);
+	//// get length of file:
+	//is.seekg(0, ios::end);
+	//fileSize = is.tellg();
+
+	//HANDLE hMapFile = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, fileSize, memoryMapingName);
+	//char* pfile = (char*)MapViewOfFile(hMapFile,FILE_MAP_ALL_ACCESS, 0, 0, fileSize);
+
+	//is.seekg(0, ios::beg);
+	//is.read(pfile, fileSize);
+	//is.close();
+
+
 	MH_EnableHook(MH_ALL_HOOKS);
 	//LoadLibrary(dll.wstring().c_str());
 	//HMODULE hdll = LoadLibrary(exe.c_str());
