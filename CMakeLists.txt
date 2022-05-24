@@ -5,6 +5,10 @@ enable_language(C)
 
 #set(CMAKE_CSharp_FLAGS "/define:TRACE /langversion:7.3")
 
+#set(staticLinkToMyDll TRUE)
+set(staticLinkToMyDll FALSE)
+
+
 project(test_dll_load)
 
 add_definitions(-DUNICODE -D_UNICODE)
@@ -42,7 +46,7 @@ set_target_properties( test_dll_load
 
 add_dependencies(test_dll_load inject_exe)
 
-add_custom_command( TARGET test_dll_load POST_BUILD COMMAND dotnet run --project ${CMAKE_CURRENT_SOURCE_DIR}/inject_exe/inject_exe.csproj )
+#add_custom_command( TARGET test_dll_load POST_BUILD COMMAND dotnet run --project ${CMAKE_CURRENT_SOURCE_DIR}/inject_exe/inject_exe.csproj )
 #---------------------------------------------------------------------
 
 #add_executable(inject_exe inject_exe.cpp) 
@@ -88,11 +92,17 @@ include_external_msproject(inject_exe ${CMAKE_CURRENT_SOURCE_DIR}/inject_exe/inj
 #set_target_properties(mydll PROPERTIES VS_GLOBAL_CLRSupport "true")
 #target_compile_options(mydll PRIVATE /clr:netcore)
 #set_property(TARGET mydll PROPERTY DOTNET_TARGET_FRAMEWORK "netcoreapp3.1")
-
 target_include_directories(test_dll_load PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-#target_link_libraries(test_dll_load mydll)
-target_link_libraries(test_dll_load delayimp.lib)
 
+if(${staticLinkToMyDll})
+    target_link_libraries(test_dll_load ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/mydll.lib)
+    add_dependencies(test_dll_load mydll)
+    add_compile_definitions(test_dll_load STATIC_LINK_TO_DLL)
+endif()
+
+
+
+#target_link_libraries(test_dll_load delayimp.lib)
 set_target_properties(test_dll_load PROPERTIES LINK_FLAGS "/DELAYLOAD:mydll.dll")
 
 

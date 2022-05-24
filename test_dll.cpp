@@ -10,7 +10,7 @@ using namespace std::filesystem;
 //#define _NTDLL_SELF_
 #include "ntddk.h"
 
-extern "C" __declspec(dllimport) void HelloDll();
+extern "C" __declspec(dllimport) void HelloDll2();
 
 bool tryMemoryMapping = false;
 //bool tryMemoryMapping = true;
@@ -236,6 +236,13 @@ NTSTATUS NTAPI NtReadFile_detour(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTIN
 int wmain(int argc, wchar_t** argv)
 {
 	printf("before HelloDll\n");
+
+#ifdef STATIC_LINK_TO_DLL
+	HelloDll2();
+	printf("take 2\n");
+	return 0;
+#endif
+
 	MH_STATUS r = MH_Initialize();
 	if (r != MH_OK)
 	{
