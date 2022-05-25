@@ -54,7 +54,10 @@ NTSTATUS WINAPI LdrLoadDll_detour(PWSTR SearchPath, PULONG DllCharacteristics, U
 wstring exePath;
 wstring redirectFromDir;
 wstring redirectTo;
+wstring redirectToFile;
 HANDLE g_dllsContainer = 0;
+bool g_bDllLoadRedirect = false;
+bool g_bDllManualLoad = true;
 map<HANDLE, int> g_handleToOffset;
 map<HANDLE, int> g_sectionToOffset;
 
@@ -72,7 +75,7 @@ NTSTATUS WINAPI NtOpenFile_detour(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 	bool redirectOpen = name._Starts_with(redirectFromDir);
 
 	NTSTATUS r = NtOpenFile_origfunc(FileHandle, DesiredAccess, poattr, IoStatusBlock, ShareAccess, OpenOptions);
-	if(SUCCEEDED(r))
+	if(SUCCEEDED(r) && g_bDllLoadRedirect)
 	{
 		if(redirectOpen && g_dllsContainer == 0)
 		{
@@ -96,8 +99,6 @@ NTSTATUS WINAPI NtOpenFile_detour(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			{
 				r = NtOpenFile_origfunc(&g_dllsContainer, DesiredAccess, poattr, IoStatusBlock, ShareAccess, OpenOptions);
 			}
-
-
 
 			// Ingnore return value
 			if (!SUCCEEDED(r))
@@ -141,6 +142,11 @@ NTSTATUS NTAPI NtDuplicateObject_detour(HANDLE SourceProcessHandle, HANDLE Sourc
 		TargetHandle, DesiredAccess, HandleAttributes, Options);
 }
 
+using NtMapViewOfSection_pfunc = NTSTATUS(NTAPI*)
+(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAddress, SIZE_T ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+	PSIZE_T ViewSize, SECTION_INHERIT InheritDisposition, ULONG AllocationType, ULONG Protect);
+
+NtMapViewOfSection_pfunc NtMapViewOfSection_origfunc;
 
 //-------------------------------------------------------------------------------------------------------------
 using NtCreateSection_pfunc = NTSTATUS (NTAPI*)
@@ -153,34 +159,88 @@ NTSTATUS NTAPI NtCreateSection_detour(PHANDLE SectionHandle, ACCESS_MASK Desired
 	PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection, ULONG AllocationAttributes, HANDLE FileHandle)
 {
 	HANDLE h = 0;
+	ifstream is;
+	LARGE_INTEGER fileSize;
+	SIZE_T fileSize2;
+	SIZE_T memSize;
 	if(FileHandle)
 	{
 		h = FileHandle;
 	}
 
-	bool trackSectionOpen = g_handleToOffset.contains(h);
-	if(trackSectionOpen)
+	bool trackSectionOpen = g_handleToOffset.contains(h) || g_bDllManualLoad;
+	if(trackSectionOpen && g_bDllManualLoad)
 	{
-		FileHandle = g_dllsContainer;
+		FileHandle = nullptr;
+		is.open(redirectToFile.c_str(), ios::binary);
+		// get length of file:
+		is.seekg(0, ios::end);
+		fileSize2 = is.tellg();
+
+		memSize = fileSize2;
+		//memSize += 0x1000 - (memSize % 0x1000);
+		//memSize += 0x10000 - (memSize % 0x10000);
+
+		fileSize.QuadPart = memSize;
+
+		MaximumSize = &fileSize;
+		is.seekg(0, ios::beg);
 	}
 
-	auto r = NtCreateSection_origfunc(SectionHandle, DesiredAccess, ObjectAttributes,
-		MaximumSize, SectionPageProtection, AllocationAttributes, FileHandle);
+	NTSTATUS r;
 
-	if(SUCCEEDED(r) && trackSectionOpen)
+	if(g_bDllManualLoad)
 	{
-		g_sectionToOffset[*SectionHandle] = g_handleToOffset[h];
+		// Use same techinique as PeLoader.cpp, mapped_loader, only in here.
+		r = NtCreateSection_origfunc(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize, PAGE_EXECUTE_READWRITE, SEC_COMMIT, FileHandle);
+	}
+	else
+	{
+		r = NtCreateSection_origfunc(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize, SectionPageProtection, AllocationAttributes, FileHandle);
+	}
+
+	if(SUCCEEDED(r) && trackSectionOpen )
+	{
+		if(g_bDllLoadRedirect)
+		{
+			g_sectionToOffset[*SectionHandle] = g_handleToOffset[h];
+		}
+		
+		if(g_bDllManualLoad)
+		{
+			PVOID mapSectionAddress = NULL;
+			r = NtMapViewOfSection_origfunc(
+				*SectionHandle,
+				NtCurrentProcess(),
+				&mapSectionAddress,
+				NULL, NULL, NULL,
+				&memSize,
+				ViewUnmap,
+				NULL,
+				PAGE_EXECUTE_READWRITE
+			);
+			if (SUCCEEDED(r))
+			{
+				memset(mapSectionAddress, 0, memSize);
+				is.read((char*)mapSectionAddress, fileSize2);
+
+				DWORD oldProtect = 0;
+				VirtualProtect(mapSectionAddress, memSize, PAGE_READWRITE, &oldProtect);
+
+				NtUnmapViewOfSection(NtCurrentProcess(), mapSectionAddress);
+			}
+		}
+	}
+
+	if (trackSectionOpen && g_bDllManualLoad)
+	{
+		is.close();
 	}
 
 	return r;
 }
 
 //-------------------------------------------------------------------------------------------------------------
-using NtMapViewOfSection_pfunc = NTSTATUS (NTAPI*)
-	( HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAddress, SIZE_T ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
-	  PSIZE_T ViewSize, SECTION_INHERIT InheritDisposition, ULONG AllocationType, ULONG Protect );
-
-NtMapViewOfSection_pfunc NtMapViewOfSection_origfunc;
 
 NTSTATUS NTAPI NtMapViewOfSection_detour(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAddress, 
 	SIZE_T ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize, SECTION_INHERIT InheritDisposition, 
@@ -263,6 +323,7 @@ int wmain(int argc, wchar_t** argv)
 	redirectTo = wstring(L"\\??\\") + argv[0];
 	// subfolder executable
 	//redirectTo = wstring(L"\\??\\") + weakly_canonical(path(argv[0])).parent_path().wstring() + L"\\ext\\mydll.dll";
+	redirectToFile = weakly_canonical(path(argv[0])).parent_path().wstring() + L"\\ext\\mydll.dll";
 
 	//redirectTo = wstring(L"\\??\\") + weakly_canonical(path(argv[0])).parent_path().wstring() + L"\\mydll2.dll";
 
@@ -313,7 +374,8 @@ int wmain(int argc, wchar_t** argv)
 	auto lastErr = GetLastError();
 	//HMODULE hexe = LoadLibrary(redirectTo.c_str());
 
-	FARPROC p = GetProcAddress(hdll, "HelloDll2");
+	FARPROC p1 = GetProcAddress(hdll, "HelloDll");
+	FARPROC p2 = GetProcAddress(hdll, "HelloDll2");
 	//p();
 
 	//HelloDll();
