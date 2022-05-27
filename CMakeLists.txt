@@ -7,6 +7,7 @@ enable_language(C)
 
 #set(staticLinkToMyDll TRUE)
 set(staticLinkToMyDll FALSE)
+set(linkPeConv FALSE)
 
 
 project(test_dll_load)
@@ -42,6 +43,7 @@ set_target_properties( test_dll_load
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${outDir}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${outDir}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${outDir}"
 )
 
 add_dependencies(test_dll_load inject_exe)
@@ -65,6 +67,7 @@ set_target_properties( dllstub
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${outDir}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${outDir}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${outDir}"
 )
 
 #---------------------------------------------------------------------
@@ -74,6 +77,7 @@ set_target_properties( mydll
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${outDir}/ext"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${outDir}/ext"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${outDir}/ext"
 )
 
 #---------------------------------------------------------------------
@@ -83,6 +87,7 @@ set_target_properties( mydll2
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${outDir}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${outDir}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${outDir}"
 )
 
 
@@ -92,7 +97,13 @@ include_external_msproject(inject_exe ${CMAKE_CURRENT_SOURCE_DIR}/inject_exe/inj
 #set_target_properties(mydll PROPERTIES VS_GLOBAL_CLRSupport "true")
 #target_compile_options(mydll PRIVATE /clr:netcore)
 #set_property(TARGET mydll PROPERTY DOTNET_TARGET_FRAMEWORK "netcoreapp3.1")
-target_include_directories(test_dll_load PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(${linkPeConv})
+    target_include_directories(test_dll_load PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/libpeconv/include)
+    target_link_libraries(test_dll_load ${CMAKE_CURRENT_SOURCE_DIR}/libpeconv/libpeconv.lib)
+    add_compile_definitions(test_dll_load PECONV)
+endif()
+
+target_link_libraries(test_dll_load KtmW32.lib)
 
 if(${staticLinkToMyDll})
     target_link_libraries(test_dll_load ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/mydll.lib)
