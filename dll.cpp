@@ -3,6 +3,6 @@
 
 extern "C" __declspec(dllexport) void HelloDll2()
 {
-	printf("Hello world\r\n");
+	printf("Hello world 2\r\n");
 }
 
