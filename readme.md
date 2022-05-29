@@ -53,3 +53,8 @@ for more information see:
 https://github.com/tapika/test_native_dll_loading/discussions/2
 
 
+### Follow up projects
+
+- https://github.com/tapika/dllloader - based on trials from this git repo.
+
+
