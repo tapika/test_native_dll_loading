@@ -22,6 +22,7 @@ bool g_tryMemoryMapping = false;
 bool g_TransactionFile = true;
 HANDLE g_hTransationFile;
 string g_dllFile;
+wstring redirectFromDir;
 
 const wchar_t* memoryMapingName = L"Global\\MyFileMappingObject";
 const wchar_t* memoryMapingNameKernel = L"\\BaseNamedObjects\\MyFileMappingObject";
@@ -46,6 +47,27 @@ HANDLE WINAPI FindFirstFileW_detour(LPCWSTR lpFileName, LPWIN32_FIND_DATAW lpFin
 }
 
 //-------------------------------------------------------------------------------------------------------------
+using NtQueryAttributesFile_pfunc = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES ObjectAttributes, PFILE_BASIC_INFORMATION FileInformation);
+
+NtQueryAttributesFile_pfunc  NtQueryAttributesFile_origfunc;
+
+
+NTSTATUS NTAPI NtQueryAttributesFile_detour(POBJECT_ATTRIBUTES ObjectAttributes, PFILE_BASIC_INFORMATION FileInformation)
+{
+	wstring_view name(ObjectAttributes->ObjectName->Buffer, ObjectAttributes->ObjectName->Length / sizeof(wchar_t));
+	bool redirectOpen = name._Starts_with(redirectFromDir);
+
+	if(redirectOpen)
+	{
+		//FileInformation->FileAttributes = 0x10aa;
+		FileInformation->FileAttributes = FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_ARCHIVE;
+		return 0;
+	}
+
+	return NtQueryAttributesFile_origfunc(ObjectAttributes, FileInformation);
+}
+
+//-------------------------------------------------------------------------------------------------------------
 
 using LdrLoadDll_pfunc = NTSTATUS(WINAPI*)(PWSTR SearchPath, PULONG DllCharacteristics, UNICODE_STRING* DllName, PVOID* BaseAddress);
 LdrLoadDll_pfunc LdrLoadDll_origfunc;
@@ -60,7 +82,6 @@ NTSTATUS WINAPI LdrLoadDll_detour(PWSTR SearchPath, PULONG DllCharacteristics, U
 //-------------------------------------------------------------------------------------------------------------
 
 wstring exePath;
-wstring redirectFromDir;
 wstring redirectTo;
 wstring redirectToFile;
 wstring baseDir;
@@ -103,27 +124,27 @@ NTSTATUS WINAPI NtOpenFile_detour(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 		//r = NtDuplicateObject_origfunc(GetCurrentProcess(), g_hTransationFile, GetCurrentProcess(), FileHandle, DesiredAccess, 0,0);
 		//*FileHandle = g_hTransationFile;
 
-		DWORD options, isolationLvl, isolationFlags, timeout;
-		options = isolationLvl = isolationFlags = timeout = 0;
+		//DWORD options, isolationLvl, isolationFlags, timeout;
+		//options = isolationLvl = isolationFlags = timeout = 0;
 
-		HANDLE hTransaction = CreateTransaction(nullptr, nullptr, options, isolationLvl, isolationFlags, timeout, nullptr);
-		g_hTransationFile = CreateFileTransactedW(
-			L"mydll_x1.dll",
-			GENERIC_WRITE | GENERIC_READ,
-			0,
-			NULL,
-			CREATE_ALWAYS,
-			FILE_ATTRIBUTE_NORMAL,
-			NULL,
-			hTransaction,
-			NULL,
-			NULL
-		);
+		//HANDLE hTransaction = CreateTransaction(nullptr, nullptr, options, isolationLvl, isolationFlags, timeout, nullptr);
+		//g_hTransationFile = CreateFileTransactedW(
+		//	L"mydll_x1.dll",
+		//	GENERIC_WRITE | GENERIC_READ,
+		//	0,
+		//	NULL,
+		//	CREATE_ALWAYS,
+		//	FILE_ATTRIBUTE_NORMAL,
+		//	NULL,
+		//	hTransaction,
+		//	NULL,
+		//	NULL
+		//);
 
-		DWORD writtenLen = 0;
-		WriteFile(g_hTransationFile, &g_dllFile[0], g_dllFile.size(), &writtenLen, NULL);
-		FlushFileBuffers(g_hTransationFile);
-		SetFilePointer(g_hTransationFile, 0, 0, FILE_BEGIN);
+		//DWORD writtenLen = 0;
+		//WriteFile(g_hTransationFile, &g_dllFile[0], g_dllFile.size(), &writtenLen, NULL);
+		//FlushFileBuffers(g_hTransationFile);
+		//SetFilePointer(g_hTransationFile, 0, 0, FILE_BEGIN);
 
 		*FileHandle = g_hTransationFile;
 		return r;
@@ -180,6 +201,15 @@ NtClose_pfunc NtClose_origfunc;
 
 NTSTATUS NTAPI NtClose_detour(HANDLE Handle)
 {
+	if(Handle == g_hTransationFile)
+	{
+		return 0;
+	}
+	
+	OBJECT_BASIC_INFORMATION objInfo = {0};
+	ULONG resultLen = 0;
+	NtQueryObject(Handle, ObjectBasicInformation, &objInfo, sizeof(objInfo), &resultLen);
+
 	auto r = NtClose_origfunc(Handle);
 	return r;
 }
@@ -420,7 +450,108 @@ NTSTATUS NTAPI NtDeviceIoControlFile_detour(HANDLE FileHandle, HANDLE Event, PIO
 		IoControlCode, InputBuffer, InputBufferLength, OutputBuffer, OutputBufferLength);
 }
 
+#include <windows.h>
+#include <stdio.h>
+#include <tchar.h>
+#include <string.h>
+#include <psapi.h>
+#include <strsafe.h>
 
+//-------------------------------------------------------------------------------------------------------------
+
+#define BUFSIZE 512
+
+BOOL GetFileNameFromHandle(HANDLE hFile)
+{
+	BOOL bSuccess = FALSE;
+	TCHAR pszFilename[MAX_PATH + 1];
+	HANDLE hFileMap;
+
+	//// Get the file size.
+	//DWORD dwFileSizeHi = 0;
+	//DWORD dwFileSizeLo = GetFileSize(hFile, &dwFileSizeHi);
+
+	//if (dwFileSizeLo == 0 && dwFileSizeHi == 0)
+	//{
+	//	return FALSE;
+	//}
+
+	// Create a file mapping object.
+	hFileMap = CreateFileMapping(hFile,
+		NULL,
+		PAGE_READONLY,
+		0,
+		1,
+		NULL);
+
+	if (hFileMap)
+	{
+		// Create a file mapping to get the file name.
+		void* pMem = MapViewOfFile(hFileMap, FILE_MAP_READ, 0, 0, 1);
+
+		if (pMem)
+		{
+			if (GetMappedFileName(GetCurrentProcess(),
+				pMem,
+				pszFilename,
+				MAX_PATH))
+			{
+
+				// Translate path with device name to drive letters.
+				TCHAR szTemp[BUFSIZE];
+				szTemp[0] = '\0';
+
+				if (GetLogicalDriveStrings(BUFSIZE - 1, szTemp))
+				{
+					TCHAR szName[MAX_PATH];
+					TCHAR szDrive[3] = TEXT(" :");
+					BOOL bFound = FALSE;
+					TCHAR* p = szTemp;
+
+					do
+					{
+						// Copy the drive letter to the template string
+						*szDrive = *p;
+
+						// Look up each device name
+						if (QueryDosDevice(szDrive, szName, MAX_PATH))
+						{
+							size_t uNameLen = _tcslen(szName);
+
+							if (uNameLen < MAX_PATH)
+							{
+								bFound = _tcsnicmp(pszFilename, szName, uNameLen) == 0
+									&& *(pszFilename + uNameLen) == _T('\\');
+
+								if (bFound)
+								{
+									// Reconstruct pszFilename using szTempFile
+									// Replace device path with DOS path
+									TCHAR szTempFile[MAX_PATH];
+									StringCchPrintf(szTempFile,
+										MAX_PATH,
+										TEXT("%s%s"),
+										szDrive,
+										pszFilename + uNameLen);
+									StringCchCopyN(pszFilename, MAX_PATH + 1, szTempFile, _tcslen(szTempFile));
+								}
+							}
+						}
+
+						// Go to the next NULL character.
+						while (*p++);
+					} while (!bFound && *p); // end of string
+				}
+			}
+			bSuccess = TRUE;
+			UnmapViewOfFile(pMem);
+		}
+
+		CloseHandle(hFileMap);
+	}
+	_tprintf(TEXT("File name is %s\n"), pszFilename);
+	return(bSuccess);
+}
 
 //-------------------------------------------------------------------------------------------------------------
 
@@ -447,7 +578,8 @@ int wmain(int argc, wchar_t** argv)
 	void* oldOpenFile = (void*)GetProcAddress(h, "OpenFileW");
 
 	//auto dll = weakly_canonical(path(argv[0])).parent_path().append("mydll.dll");
-	auto dll = weakly_canonical(path(argv[0])).parent_path().append("dllstub.dll");
+	//auto dll = weakly_canonical(path(argv[0])).parent_path().append("dllstub.dll");
+	auto dll = weakly_canonical(path(argv[0])).parent_path().append("dllstub2.dll");
 	auto extdll = weakly_canonical(path(argv[0])).parent_path().append("ext").append("mydll.dll");
 	redirectFromDir = L"\\??\\" + weakly_canonical(path(argv[0])).parent_path().wstring();
 
@@ -476,6 +608,7 @@ int wmain(int argc, wchar_t** argv)
 	r = MH_CreateHookApi(ntdll_dll, "NtMapViewOfSection", &NtMapViewOfSection_detour, (LPVOID*)&NtMapViewOfSection_origfunc);
 	r = MH_CreateHookApi(ntdll_dll, "NtReadFile", &NtReadFile_detour, (LPVOID*)&NtReadFile_origfunc);
 	r = MH_CreateHookApi(ntdll_dll, "NtDeviceIoControlFile", &NtDeviceIoControlFile_detour, (LPVOID*)&NtDeviceIoControlFile_origfunc);
+	r = MH_CreateHookApi(ntdll_dll, "NtQueryAttributesFile", &NtQueryAttributesFile_detour, (LPVOID*)&NtQueryAttributesFile_origfunc);
 	
 	if(g_tryMemoryMapping || g_TransactionFile)
 	{
@@ -515,27 +648,30 @@ int wmain(int argc, wchar_t** argv)
 			is.read(&g_dllFile[0], fileSize);
 
 
-			//DWORD options, isolationLvl, isolationFlags, timeout;
-			//options = isolationLvl = isolationFlags = timeout = 0;
+			DWORD options, isolationLvl, isolationFlags, timeout;
+			options = isolationLvl = isolationFlags = timeout = 0;
 
-			//HANDLE hTransaction = CreateTransaction(nullptr, nullptr, options, isolationLvl, isolationFlags, timeout, nullptr);
-			//g_hTransationFile = CreateFileTransactedW(
-			//	L"mydll_x1.dll",
-			//	GENERIC_WRITE | GENERIC_READ,
-			//	0,
-			//	NULL,
-			//	CREATE_ALWAYS,
-			//	FILE_ATTRIBUTE_NORMAL,
-			//	NULL,
-			//	hTransaction,
-			//	NULL,
-			//	NULL
-			//);
+			HANDLE hTransaction = CreateTransaction(nullptr, nullptr, options, isolationLvl, isolationFlags, timeout, nullptr);
+			g_hTransationFile = CreateFileTransactedW(
+				L"mydll_x1.dll",
+				GENERIC_WRITE | GENERIC_READ,
+				0,
+				NULL,
+				CREATE_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL,
+				NULL,
+				hTransaction,
+				NULL,
+				NULL
+			);
 
-			//DWORD writtenLen = 0;
-			//WriteFile(g_hTransationFile, &g_dllFile[0], fileSize, &writtenLen, NULL);
-			//FlushFileBuffers(g_hTransationFile);
-			//SetFilePointer(g_hTransationFile, 0, 0, FILE_BEGIN);
+
+			DWORD writtenLen = 0;
+			WriteFile(g_hTransationFile, &g_dllFile[0], fileSize, &writtenLen, NULL);
+			FlushFileBuffers(g_hTransationFile);
+			SetFilePointer(g_hTransationFile, 0, 0, FILE_BEGIN);
+
+			//GetFileNameFromHandle(g_hTransationFile);
 
 			//HANDLE hSection = nullptr;
 			//NTSTATUS status = NtCreateSection(&hSection,
@@ -572,6 +708,8 @@ int wmain(int argc, wchar_t** argv)
 
 	//HelloDll();
 	printf("after HelloDll\n");
+
+	g_TransactionFile = 0;
 	return 0;
 }
 
